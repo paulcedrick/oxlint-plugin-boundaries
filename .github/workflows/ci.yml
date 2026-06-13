@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Build + lint + type-check + test the package against a matrix of oxlint
+  # versions (G4 — jsPlugins is alpha, so we prove the supported range works).
+  # Runs on Node >= 22.18 because that is tsdown's floor for *running the build*.
+  build-and-test:
+    name: build & test (oxlint ${{ matrix.oxlint }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        oxlint:
+          - "1.69.0" # pinned/tested baseline
+          - "latest"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Pin oxlint under test
+        run: bun add -D --exact oxlint@${{ matrix.oxlint }}
+
+      - name: Type-check
+        run: bun run type-check
+
+      - name: Lint (dogfood this plugin)
+        run: bun run lint
+
+      - name: Build (tsdown -> dist, runs publint + attw)
+        run: bun run build
+
+      - name: Test
+        run: bun test
+
+  # Prove the SHIPPED artifact loads on Node BELOW tsdown's build floor.
+  # This is the whole reason we compile .ts -> .js (Strategy B): consumers may
+  # run oxlint under old Node where a raw .ts plugin would not load. We build
+  # once (on new Node) then import dist/ on each old-Node target.
+  artifact-loads-on-old-node:
+    name: artifact loads (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - "18" # below the ^20.19 / 22.18 type-stripping floor
+          - "20.19"
+          - "22.17" # the floor-minus-one this project was developed against
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build the artifact on a Node that satisfies tsdown's floor.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install + build
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      # Switch to the OLD Node and confirm dist/ imports as plain JS.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Import the built plugin on old Node
+        run: |
+          node --input-type=module -e "
+            import plugin from './dist/index.js';
+            if (!plugin || plugin.meta?.name !== 'boundaries') {
+              throw new Error('plugin did not load: ' + JSON.stringify(plugin?.meta));
+            }
+            const ruleIds = Object.keys(plugin.rules ?? {});
+            for (const id of ['element-types', 'no-unknown']) {
+              if (!ruleIds.includes(id)) throw new Error('missing rule: ' + id);
+            }
+            console.log('OK: plugin loads on Node ' + process.versions.node + ' with rules', ruleIds);
+          "
