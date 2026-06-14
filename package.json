@@ -47,17 +47,26 @@
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "test": "bun test",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun run build",
+    "release": "semantic-release"
   },
   "dependencies": {
     "@oxlint/plugins": "^1.69.0"
   },
   "devDependencies": {
     "@arethetypeswrong/core": "^0.18.3",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^12.0.8",
+    "@semantic-release/npm": "^13.1.5",
+    "@semantic-release/release-notes-generator": "^14.1.1",
     "@types/bun": "latest",
+    "conventional-changelog-conventionalcommits": "^9.3.1",
     "oxfmt": "^0.54.0",
     "oxlint": "1.69.0",
     "publint": "^0.3.21",
+    "semantic-release": "^25.0.5",
     "tsdown": "^0.22.2",
     "typescript": "^6.0.0"
   },
