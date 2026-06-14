@@ -1,0 +1,90 @@
+name: Release
+
+# Publish to npm automatically, driven entirely by Conventional Commits.
+#
+# This workflow does NOT run its own build/lint/test — it is gated on the `CI`
+# workflow finishing successfully for the same commit on `main`. semantic-release
+# then reads the commits since the last release, computes the next version
+# (staying inside 0.x — see .releaserc.json), updates package.json + CHANGELOG.md,
+# tags the release, publishes to npm (authenticated with NPM_CI_TOKEN), and opens
+# a GitHub Release.
+#
+# Publishing is token-based on purpose. Adding npm provenance would require an
+# `id-token: write` permission AND a Trusted Publisher configured for this
+# package on npmjs.com — without that config the publish fails — so it is left
+# as a documented opt-in (see the "Releasing" section of the README).
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  # Allow a manual release run from the Actions tab (e.g. to retry a failed
+  # publish) without having to push an empty commit.
+  workflow_dispatch:
+
+# Least-privilege by default; the release job widens what it needs below.
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    # Release only when the gating CI run both SUCCEEDED and ran on `main`.
+    # The explicit head_branch check is belt-and-suspenders alongside the
+    # `branches: [main]` filter above: for a CI run triggered by a pull_request,
+    # `workflow_run` can still fire, so we confirm the originating branch was
+    # `main` before publishing. `workflow_dispatch` runs have no `workflow_run`
+    # payload and always run on the default branch, so allow those through.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    permissions:
+      contents: write # commit the version bump + CHANGELOG, push the git tag, create the GitHub Release
+      issues: write # comment on issues closed by a release
+      pull-requests: write # comment on PRs included in a release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # semantic-release needs full history + all tags to find the last
+          # release and compute the next version.
+          fetch-depth: 0
+          # Keep the GITHUB_TOKEN available to git so @semantic-release/git can
+          # push the release commit back to main.
+          persist-credentials: true
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # @semantic-release/npm shells out to the real `npm` CLI to publish, so a
+      # Node + npm toolchain must be present even though this repo uses Bun.
+      # Pinned to Node 22 (not the moving `lts/*`) because semantic-release@25
+      # and its npm/github plugins require Node `^22.14.0 || >=24.10.0`; `lts/*`
+      # could transiently resolve below that floor.
+      # Note: deliberately NO `registry-url` here — semantic-release writes its
+      # own temporary .npmrc from NPM_TOKEN, and setting registry-url would
+      # conflict with that auth.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build (produce dist/ for the publish)
+        run: bun run build
+
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_CI_TOKEN }}
+        run: bunx semantic-release

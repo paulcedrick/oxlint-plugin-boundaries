@@ -126,6 +126,37 @@ bun test
 
 > tsdown requires Node ≥ 22.18 / ≥ 24 to _run the build_. This affects contributors and CI only — never consumers of the published package.
 
+## Releasing
+
+Releases are **fully automated from commit messages** — there is no manual version bump. Every push to `main` runs CI; once CI is green, the [Release workflow](.github/workflows/release.yml) runs [semantic-release](https://semantic-release.gitbook.io/semantic-release), which reads the commits since the last release, computes the next version, updates `package.json` + `CHANGELOG.md`, tags the release, publishes to npm, and opens a GitHub Release.
+
+To make this work, commits must follow [Conventional Commits](https://www.conventionalcommits.org). The commit **type** decides the bump:
+
+| Commit                                                        | Release   | Example (from `0.1.0`) |
+| ------------------------------------------------------------- | --------- | ---------------------- |
+| `fix:` / `perf:` / `revert:`                                  | **patch** | `0.1.1`                |
+| `feat:`                                                       | **minor** | `0.2.0`                |
+| `feat!:` / any commit with `BREAKING CHANGE:` in body         | **minor** | `0.2.0` _(see below)_  |
+| `docs:` / `chore:` / `refactor:` / `test:` / `ci:` / `style:` | _none_    | —                      |
+
+**Pre-1.0 policy.** While this package is in `0.x`, a breaking change bumps the **minor** version (not `1.0.0`) — matching the alpha status described in [Versioning & the alpha pin](#versioning--the-alpha-pin). This is enforced by a `releaseRules` override in [`.releaserc.json`](.releaserc.json). When the API is ready for 1.0, remove the `{ "breaking": true, "release": "minor" }` rule and the next breaking change will cut `1.0.0`.
+
+A release only fires when at least one commit since the last release warrants one (a lone `docs:`/`chore:` push publishes nothing). The release commit is pushed back to `main` with `[skip ci]`, so it does not re-trigger the pipeline.
+
+> **Maintainer setup.** Publishing uses the `NPM_CI_TOKEN` repository secret, which must be an npm **Automation** token (Automation tokens bypass the 2FA check in CI).
+
+**Recovering a failed release.** `@semantic-release/git` pushes the version-bump commit during the _prepare_ step, before the npm _publish_ step. If publish fails (e.g. a bad token), the bump commit may already be on `main` while npm never received the package. Fix the cause, then re-run the **Release** workflow from the Actions tab (`workflow_dispatch`) — semantic-release is idempotent and will complete the publish for the pending version without double-releasing.
+
+**First release.** semantic-release derives the "last released version" from **git tags**, not from npm. This repo has no release tags yet, so the first run would normally start the version at `1.0.0`. To keep the `0.x` line continuous from the already-published `0.1.0`, create the baseline tag once before the first automated release:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Then the first `fix:`/`feat:` merged to `main` releases `0.1.1` / `0.2.0` as expected.
+
+**Optional: npm provenance.** Publishing is token-based and does not attach [provenance](https://docs.npmjs.com/generating-provenance-statements). To enable it later, add a [Trusted Publisher](https://docs.npmjs.com/trusted-publishers) for this package on npmjs.com (pointing at this repo and `.github/workflows/release.yml`) and add `id-token: write` to the release job's `permissions`. Enabling `id-token` **without** configuring the trusted publisher first will make publishes fail.
+
 ## License
 
 [MIT](./LICENSE) © Paul Cedrick Artigo
