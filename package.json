@@ -1,0 +1,70 @@
+{
+  "name": "oxlint-plugin-boundaries",
+  "version": "0.1.0",
+  "description": "Config-driven cross-package / element-type boundaries enforcement for oxlint — a resolver-less JS plugin. Each repo declares its own element table and allow-matrix in `.oxlintrc.json` settings.",
+  "keywords": [
+    "architecture",
+    "boundaries",
+    "dependency-rules",
+    "lint",
+    "monorepo",
+    "oxc",
+    "oxlint",
+    "oxlint-plugin"
+  ],
+  "homepage": "https://github.com/paulcedrick/oxlint-plugin-boundaries#readme",
+  "bugs": {
+    "url": "https://github.com/paulcedrick/oxlint-plugin-boundaries/issues"
+  },
+  "license": "MIT",
+  "author": "Paul Cedrick Artigo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paulcedrick/oxlint-plugin-boundaries.git"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "type-check": "tsc --noEmit",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "test": "bun test",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "@oxlint/plugins": "^1.69.0"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/core": "^0.18.3",
+    "@types/bun": "latest",
+    "oxfmt": "^0.54.0",
+    "oxlint": "1.69.0",
+    "publint": "^0.3.21",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.0"
+  },
+  "peerDependencies": {
+    "oxlint": ">=1.69.0 <2"
+  },
+  "engines": {
+    "node": ">=20.19"
+  }
+}
