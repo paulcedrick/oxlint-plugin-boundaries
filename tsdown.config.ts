@@ -3,18 +3,16 @@ import { defineConfig } from "tsdown";
 // Build the plugin from real TypeScript source to ESM `.js` + `.d.ts`.
 //
 // Why a build step at all (the in-repo Postpipe version shipped raw `.mjs`,
-// gotcha G3): a published package can be consumed by oxlint running under any
-// Node version. Raw `.ts` plugins only load on Node >= 22.18 / ^20.19 (native
-// type-stripping), so shipping `.ts` would silently break older consumers.
-// Strategy B — author in `.ts`, ship compiled `.js` — keeps the artifact
-// loadable everywhere while letting us author with full types. `target` below
-// pins the OUTPUT to the oldest Node we promise to support; tsdown itself
-// requires Node >= 22.18 to *run* the build (CI/dev only, not consumers).
+// gotcha G3): even though this package now requires Node >= 24 (which strips
+// TypeScript natively), shipping compiled `.js` keeps the published artifact a
+// plain, dependency-free ESM module — no reliance on the consumer's Node having
+// type-stripping enabled, and full `.d.ts` for type consumers. `target` below
+// pins the OUTPUT to our supported Node floor.
 export default defineConfig({
   entry: ["src/index.ts"],
   format: ["esm"],
   platform: "node",
-  target: "node20.19",
+  target: "node24",
   dts: true,
   clean: true,
   // package.json is `"type": "module"`, so a `.js` file is already ESM. Force
