@@ -108,13 +108,13 @@ Self-imports (an element importing its own type) are always allowed. External de
 
 oxlint's `jsPlugins` API is **alpha** and not semver-stable. The policy here:
 
-- `peerDependencies.oxlint` is pinned to a **tested range**; CI runs an oxlint-version matrix.
+- `peerDependencies.oxlint` is pinned to a **tested range**; CI verifies against the pinned baseline.
 - When oxlint ships a breaking plugin-API change, this package cuts a new release with an updated range. The test suite is the tripwire — there are no defensive version guards in the runtime.
 - Keep your `oxlint` within the supported range for predictable behavior.
 
 ## Authoring / build (for contributors)
 
-Authored in TypeScript, shipped as compiled **ESM `.js` + `.d.ts`** so the published artifact loads on any supported Node — including versions below the 22.18 floor that raw `.ts` oxlint plugins require. Built with [tsdown](https://tsdown.dev) (oxc / Rolldown).
+Authored in TypeScript, shipped as compiled **ESM `.js` + `.d.ts`** so the published artifact is a plain, dependency-free ESM module with full types — no reliance on the consumer's Node having TypeScript type-stripping enabled. Built with [tsdown](https://tsdown.dev) (oxc / Rolldown).
 
 ```sh
 bun install
@@ -124,11 +124,11 @@ bun run lint         # dogfoods this very plugin
 bun test
 ```
 
-> tsdown requires Node ≥ 22.18 / ≥ 24 to _run the build_. This affects contributors and CI only — never consumers of the published package.
+> This package requires **Node ≥ 24** (see `engines` in `package.json`) — for both consumers and contributors. CI runs on Node 24.
 
 ## Releasing
 
-Releases are **fully automated from commit messages** — there is no manual version bump. Every push to `main` runs CI; once CI is green, the [Release workflow](.github/workflows/release.yml) runs [semantic-release](https://semantic-release.gitbook.io/semantic-release), which reads the commits since the last release, computes the next version, updates `package.json` + `CHANGELOG.md`, tags the release, publishes to npm, and opens a GitHub Release.
+Releases are **fully automated from commit messages** — there is no manual version bump. The [CI workflow](.github/workflows/release.yml) runs on every push to `main`: a `verify` job (type-check, lint, build, test) followed by a `release` job that only runs once `verify` is green. The `release` job runs [semantic-release](https://semantic-release.gitbook.io/semantic-release), which reads the commits since the last release, computes the next version, updates `package.json` + `CHANGELOG.md`, tags the release, publishes to npm, and opens a GitHub Release.
 
 To make this work, commits must follow [Conventional Commits](https://www.conventionalcommits.org). The commit **type** decides the bump:
 
