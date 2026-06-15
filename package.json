@@ -68,7 +68,8 @@
     "publint": "^0.3.21",
     "semantic-release": "^25.0.5",
     "tsdown": "^0.22.2",
-    "typescript": "^6.0.0"
+    "typescript": "^6.0.0",
+    "unrun": "^0.3.1"
   },
   "peerDependencies": {
     "oxlint": ">=1.69.0 <2"
