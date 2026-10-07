@@ -12,7 +12,7 @@
 //   - imported target -> relative spec resolved against the file dir, OR a bare
 //                         workspace specifier mapped to its package dir.
 
-import { dirname, getPackageIndex, resolve, resolveSpecifierDir } from "./discover.js";
+import { dirname, getPackageIndex, resolve, resolveSpecifierPath } from "./discover.js";
 
 export interface Element {
   type: string;
@@ -89,9 +89,9 @@ export function classifySpecifier(
   root: string,
   elements: Element[],
 ): string | null {
-  const dir = resolveSpecifierDir(specifier, getPackageIndex(root));
-  if (!dir) return null;
-  return classifyPath(dir, root, elements);
+  const target = resolveSpecifierPath(specifier, getPackageIndex(root));
+  if (!target) return null;
+  return classifyPath(target, root, elements);
 }
 
 /**

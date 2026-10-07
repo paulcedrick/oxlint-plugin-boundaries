@@ -10,7 +10,7 @@
 // specifier (e.g. `@scope/core`) into a directory, we read every workspace
 // `package.json`'s `name` once and build a name -> dir index.
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 
 export interface DiscoveredPackage {
@@ -23,12 +23,18 @@ export interface DiscoveredPackage {
 interface PackageJson {
   name?: unknown;
   workspaces?: unknown;
+  exports?: unknown;
+  source?: unknown;
+  module?: unknown;
+  main?: unknown;
+  nx?: unknown;
 }
 
 /**
  * Walk up from `startDir` to the monorepo root: the nearest ancestor whose
- * `package.json` declares `"workspaces"`. Falls back to `fallback` (typically
- * `context.cwd`) when no such ancestor exists.
+ * `package.json` declares `"workspaces"` or the directory contains a
+ * `pnpm-workspace.yaml`. Falls back to `fallback` (typically `context.cwd`)
+ * when no such ancestor exists.
  *
  * Keying off the file path (not cwd) is what makes classification
  * cwd-independent — running oxlint from a workspace subdir resolves the same
@@ -38,11 +44,14 @@ export function findWorkspaceRoot(startDir: string, fallback: string): string {
   let dir = startDir;
   // Guard against symlink / root loops: stop when `dirname` stops changing.
   for (;;) {
+    if (existsSync(join(dir, "pnpm-workspace.yaml"))) return dir;
     const pkgPath = join(dir, "package.json");
     if (existsSync(pkgPath)) {
       try {
         const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as PackageJson;
-        if (pkg && pkg.workspaces !== undefined) return dir;
+        if (pkg && (pkg.workspaces !== undefined || existsSync(join(dir, "pnpm-workspace.yaml")))) {
+          return dir;
+        }
       } catch {
         // Unreadable/!JSON package.json — keep walking up.
       }
@@ -59,50 +68,147 @@ export function findWorkspaceRoot(startDir: string, fallback: string): string {
  * patterns. Supports both the array form (`["apps/*", ...]`) and the Bun/Yarn
  * object form (`{ packages: [...] }`). Returns `[]` on any problem.
  */
+function parseYamlScalar(value: string): string | null {
+  const trimmed = value.trim().replace(/\s+#.*$/, "");
+  if (!trimmed) return null;
+  const unquoted = trimmed.replace(
+    /^(?:'([^']*)'|"((?:\\.|[^"])*)")$/,
+    (_match, single, double) =>
+      single ?? (double as string).replaceAll('\\"', '"').replaceAll("\\\\", "\\"),
+  );
+  return unquoted === trimmed && /^[|>&*!{}[\],]/.test(trimmed) ? null : unquoted;
+}
+
+function splitYamlFlowSequence(value: string): string[] {
+  const items: string[] = [];
+  let start = 0;
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < value.length; i += 1) {
+    const char = value[i];
+    if (quote === '"' && char === "\\") {
+      i += 1;
+    } else if (quote && char === quote) {
+      quote = null;
+    } else if (!quote && (char === "'" || char === '"')) {
+      quote = char;
+    } else if (!quote && char === ",") {
+      items.push(value.slice(start, i));
+      start = i + 1;
+    }
+  }
+  items.push(value.slice(start));
+  return items;
+}
+
+/** Read pnpm's `packages:` block without adding a YAML runtime dependency. */
+function readPnpmWorkspaceGlobs(root: string): string[] {
+  try {
+    const text = readFileSync(join(root, "pnpm-workspace.yaml"), "utf8");
+    const lines = text.split(/\r?\n/);
+    const lineIndex = lines.findIndex((item) => /^\s*packages\s*:/.test(item));
+    if (lineIndex === -1) return [];
+    const line = lines[lineIndex] as string;
+    const afterColon = line.slice(line.indexOf(":") + 1).trim();
+    if (afterColon.startsWith("[")) {
+      let sequence = afterColon;
+      let close = sequence.indexOf("]");
+      for (let i = lineIndex + 1; close === -1 && i < lines.length; i += 1) {
+        sequence += ` ${(lines[i] as string).replace(/\s+#.*$/, "").trim()}`;
+        close = sequence.indexOf("]");
+      }
+      if (close === -1) return [];
+      const items = sequence.slice(1, close);
+      return splitYamlFlowSequence(items)
+        .map(parseYamlScalar)
+        .filter((item): item is string => item !== null);
+    }
+    const out: string[] = [];
+    for (const item of lines.slice(lineIndex + 1)) {
+      if (item.trim() && !/^\s/.test(item)) break;
+      const match = /^\s*-\s*(.*?)\s*$/.exec(item);
+      if (match) {
+        const value = parseYamlScalar(match[1] as string);
+        if (value !== null) out.push(value);
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 function readWorkspaceGlobs(root: string): string[] {
+  const globs = readPnpmWorkspaceGlobs(root);
   try {
     const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as PackageJson;
     const ws = pkg.workspaces;
-    if (Array.isArray(ws)) return ws as string[];
+    if (Array.isArray(ws)) return [...globs, ...(ws as string[])];
     if (ws && typeof ws === "object" && Array.isArray((ws as { packages?: unknown }).packages)) {
-      return (ws as { packages: string[] }).packages;
+      return [...globs, ...(ws as { packages: string[] }).packages];
     }
   } catch {
     // fall through
   }
-  return [];
+  return globs;
 }
 
 /**
  * Expand a single workspace glob into concrete package directories.
  *
- * Only the two shapes monorepos actually use are handled: a literal directory
- * (`packages/core`) and a single-level wildcard (`packages/*`, `apps/*`). A
- * `**` glob is treated as the directory before it. No glob engine needed.
+ * Expand the `*` and `**` path segments used by npm/pnpm workspace patterns.
  */
 function expandGlob(root: string, glob: string): string[] {
-  const normalized = glob.replaceAll("\\", "/").replace(/\/+$/, "");
-  const starIdx = normalized.indexOf("*");
-  if (starIdx === -1) {
-    const dir = resolve(root, normalized);
-    return existsSync(dir) ? [dir] : [];
-  }
-  // Parent of the first wildcard segment, e.g. "packages/*" -> "packages".
-  const beforeStar = normalized.slice(0, starIdx);
-  const parentRel = beforeStar.replace(/\/[^/]*$/, "").replace(/\/$/, "");
-  const parentDir = resolve(root, parentRel);
-  if (!existsSync(parentDir)) return [];
+  const segments = glob.replaceAll("\\", "/").replace(/^\.\//, "").split("/").filter(Boolean);
   const out: string[] = [];
-  for (const entry of readdirSync(parentDir)) {
-    if (entry.startsWith(".")) continue;
-    const child = join(parentDir, entry);
-    try {
-      if (statSync(child).isDirectory()) out.push(child);
-    } catch {
-      // ignore unreadable entries
+  const visited = new Set<string>();
+  const visit = (dir: string, index: number): void => {
+    if (visited.has(`${dir}\0${index}`)) return;
+    visited.add(`${dir}\0${index}`);
+    if (index === segments.length) {
+      if (existsSync(dir)) out.push(dir);
+      return;
     }
-  }
+    const segment = segments[index] as string;
+    if (segment === "**") {
+      visit(dir, index + 1);
+      try {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+          const child = join(dir, entry.name);
+          if (entry.isDirectory()) visit(child, index);
+        }
+      } catch {
+        // Ignore missing or unreadable directories.
+      }
+      return;
+    }
+    if (!segment.includes("*")) {
+      visit(join(dir, segment), index + 1);
+      return;
+    }
+    const matcher = new RegExp(`^${segment.split("*").map(escapeRegExp).join(".*")}$`);
+    try {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (
+          entry.name.startsWith(".") ||
+          entry.name === "node_modules" ||
+          !matcher.test(entry.name)
+        ) {
+          continue;
+        }
+        const child = join(dir, entry.name);
+        if (entry.isDirectory()) visit(child, index + 1);
+      }
+    } catch {
+      // Ignore missing or unreadable directories.
+    }
+  };
+  visit(root, 0);
   return out;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
@@ -113,7 +219,14 @@ export function discoverPackages(root: string): DiscoveredPackage[] {
   const packages: DiscoveredPackage[] = [];
   const seen = new Set<string>();
   for (const glob of readWorkspaceGlobs(root)) {
-    for (const dir of expandGlob(root, glob)) {
+    const excluded = glob.startsWith("!");
+    for (const dir of expandGlob(root, excluded ? glob.slice(1) : glob)) {
+      if (excluded) {
+        seen.delete(dir);
+        const idx = packages.findIndex((pkg) => pkg.dir === dir);
+        if (idx !== -1) packages.splice(idx, 1);
+        continue;
+      }
       if (seen.has(dir)) continue;
       seen.add(dir);
       try {
@@ -169,6 +282,104 @@ export function resolveSpecifierDir(specifier: string, index: Map<string, string
     }
   }
   return bestDir;
+}
+
+/**
+ * Resolve an internal package specifier to its best available source path.
+ * Package identity remains available through `resolveSpecifierDir`; this path
+ * is only used for element classification. Existing export targets and source
+ * entry fields take precedence, with package directory as a safe fallback.
+ */
+const specifierPathCache = new Map<string, string | null>();
+
+export function resolveSpecifierPath(specifier: string, index: Map<string, string>): string | null {
+  const dir = resolveSpecifierDir(specifier, index);
+  if (!dir) return null;
+  const cacheKey = `${dir}\0${specifier}`;
+  if (specifierPathCache.has(cacheKey)) return specifierPathCache.get(cacheKey) ?? null;
+  const result = resolveSpecifierPathUncached(specifier, dir, index);
+  specifierPathCache.set(cacheKey, result);
+  return result;
+}
+
+function resolveSpecifierPathUncached(
+  specifier: string,
+  dir: string,
+  index: Map<string, string>,
+): string {
+  const packageName = [...index.keys()]
+    .filter((name) => specifier === name || specifier.startsWith(`${name}/`))
+    .sort((a, b) => b.length - a.length)[0];
+  const subpath =
+    packageName && specifier !== packageName ? `./${specifier.slice(packageName.length + 1)}` : ".";
+  try {
+    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as PackageJson;
+    const workspaceRoot = (start: string): string => {
+      let current = start;
+      for (;;) {
+        if (existsSync(join(current, "pnpm-workspace.yaml"))) return current;
+        try {
+          const rootPkg = JSON.parse(
+            readFileSync(join(current, "package.json"), "utf8"),
+          ) as PackageJson;
+          if (rootPkg.workspaces !== undefined) return current;
+        } catch {
+          // Keep walking when this package.json is unreadable.
+        }
+        const parent = dirname(current);
+        if (parent === current) return start;
+        current = parent;
+      }
+    };
+    const root = workspaceRoot(dir);
+    const targets: string[] = [];
+    const addTarget = (value: unknown): void => {
+      if (typeof value === "string" && value.startsWith("./")) targets.push(value);
+      else if (value && typeof value === "object") {
+        const conditions = value as Record<string, unknown>;
+        for (const key of ["source", "import", "default", "types", "require"])
+          addTarget(conditions[key]);
+      }
+    };
+    const exports = pkg.exports;
+    if (typeof exports === "string") {
+      if (subpath === ".") addTarget(exports);
+    } else if (exports && typeof exports === "object" && !Array.isArray(exports)) {
+      const entries = exports as Record<string, unknown>;
+      if (subpath === ".") addTarget("." in entries ? entries["."] : exports);
+      else addTarget(entries[subpath]);
+    }
+    const nxSourceRoot = (pkg.nx as { sourceRoot?: unknown } | undefined)?.sourceRoot;
+    if (typeof nxSourceRoot === "string") {
+      targets.push(resolve(root, nxSourceRoot));
+    }
+    try {
+      const project = JSON.parse(readFileSync(join(dir, "project.json"), "utf8")) as {
+        sourceRoot?: unknown;
+      };
+      if (typeof project.sourceRoot === "string") {
+        targets.push(resolve(root, project.sourceRoot));
+      }
+    } catch {
+      // Nx project metadata is optional.
+    }
+    if (subpath !== ".") targets.push(subpath);
+    for (const key of ["source", "module", "main"] as const) {
+      if (typeof pkg[key] === "string") {
+        const value = pkg[key] as string;
+        targets.push(value.startsWith("./") ? value : `./${value}`);
+      }
+    }
+    for (const target of targets) {
+      const abs = target.startsWith("./") ? resolve(dir, target) : resolve(target);
+      if ((abs.startsWith(`${dir}${sep}`) || abs.startsWith(`${root}${sep}`)) && existsSync(abs)) {
+        return abs;
+      }
+    }
+  } catch {
+    // A declared package is still known even if its metadata cannot be read.
+  }
+  return dir;
 }
 
 // Re-export for callers that build paths relative to a file.

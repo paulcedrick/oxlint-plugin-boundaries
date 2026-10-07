@@ -116,7 +116,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  rmSync(workspace, { recursive: true, force: true });
+  if (workspace) rmSync(workspace, { recursive: true, force: true });
 });
 
 type LintRun = { status: number | null; output: string };

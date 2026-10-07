@@ -96,6 +96,34 @@ describe("config: element pattern compiler (gotcha G6)", () => {
     expect(dot?.test("packages/a.b/x.ts")).toBe(true);
     expect(dot?.test("packages/axb/x.ts")).toBe(false);
   });
+
+  it("supports workspace globs and multiple paths for one element type", () => {
+    const c = compileConfig({
+      elements: [
+        {
+          type: "data-access",
+          pattern: ["libs/*/data-access/src/**", "apps/*/data-access/src/**"],
+        },
+      ],
+      rules: [],
+      workspaceScope: "@prism/",
+    });
+    const dataAccess = c.elements[0];
+    expect(dataAccess?.test("libs/platform/data-access/src/index.ts")).toBe(true);
+    expect(dataAccess?.test("apps/billing/data-access/src/index.ts")).toBe(true);
+    expect(dataAccess?.test("libs/platform/database/src/index.ts")).toBe(false);
+  });
+
+  it("allows globstars to match zero or more path segments", () => {
+    const c = compileConfig({
+      elements: [{ type: "data-access", pattern: "libs/**/data-access/src/**" }],
+      rules: [],
+      workspaceScope: "@prism/",
+    });
+    const dataAccess = c.elements[0];
+    expect(dataAccess?.test("libs/data-access/src/index.ts")).toBe(true);
+    expect(dataAccess?.test("libs/platform/data-access/src/index.ts")).toBe(true);
+  });
 });
 
 describe("config: rules normalize into ALLOW / TYPE_ONLY_ALLOW", () => {
@@ -349,14 +377,19 @@ describe("config: validation errors (actionable, specific)", () => {
     ).toThrow(/duplicate|a/);
   });
 
-  it("rejects an unsupported pattern shape rather than silently mis-matching", () => {
-    // A mid-segment wildcard like `packages/*/src` is not in the supported set.
+  it("rejects an empty pattern list", () => {
+    expect(() =>
+      compileConfig({ elements: [{ type: "a", pattern: [] }], rules: [], workspaceScope: "@s/" }),
+    ).toThrow(/pattern/);
+  });
+
+  it("explains that pattern must be a non-empty string or string array", () => {
     expect(() =>
       compileConfig({
-        elements: [{ type: "a", pattern: "packages/*/src/**" }],
+        elements: [{ type: "a", pattern: ["a/**", 42] }],
         rules: [],
         workspaceScope: "@s/",
       }),
-    ).toThrow(/pattern/);
+    ).toThrow(/non-empty string or a non-empty array of non-empty strings/);
   });
 });

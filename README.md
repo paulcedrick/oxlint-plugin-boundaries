@@ -10,7 +10,7 @@ You declare your own element table and allow-matrix in `.oxlintrc.json`; the plu
 
 oxlint has no native cross-package boundaries rule, and the popular [`eslint-plugin-boundaries`](https://github.com/javierbrea/eslint-plugin-boundaries) **cannot run under oxlint's JS-plugin layer**: that layer intentionally exposes _no module resolver_ (no `context.resolve`, empty `parserServices`), and `eslint-plugin-boundaries` depends on one (`eslint-import-resolver-typescript`).
 
-This plugin sidesteps the missing resolver by **classifying purely from the file path**. It walks up to your workspace root, reads each package's `package.json` `name` once to build a `name → directory` index, and resolves bare specifiers like `@scope/pkg` to a directory — then to an element type. No resolver required.
+This plugin sidesteps the missing resolver by **classifying purely from the file path**. It walks up to your workspace root (including `pnpm-workspace.yaml` roots), reads each package's `package.json` `name` once to build a `name → directory` index, and resolves bare specifiers like `@scope/pkg` to an exported/source entry path when available — then to an element type. No resolver required.
 
 ## Install
 
@@ -76,10 +76,10 @@ This object is the plugin's public API.
 
 **`Element`**
 
-| Field     | Type     | Meaning                                                        |
-| --------- | -------- | -------------------------------------------------------------- |
-| `type`    | `string` | Element type name, referenced by `rules`.                      |
-| `pattern` | `string` | Path pattern (root-relative) classifying files into this type. |
+| Field     | Type                   | Meaning                                                                                                                                                                      |
+| --------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `type`    | `string`               | Element type name, referenced by `rules`.                                                                                                                                    |
+| `pattern` | `string` \| `string[]` | Root-relative path prefix/glob(s) classifying files into this type. Supports `*` within one path segment and `**` across segments. Arrays let one type cover multiple roots. |
 
 **`Rule`**
 
@@ -99,9 +99,9 @@ Self-imports (an element importing its own type) are always allowed. External de
 
 ## How classification works
 
-1. **Find the workspace root** — walk up from the file to the nearest `package.json` declaring `workspaces` (falls back to oxlint's cwd). Keying off the file path keeps results identical no matter which directory you run oxlint from.
-2. **Index packages** — read each workspace package's `name` once; memoize a `name → dir` map.
-3. **Classify both ends of each import** — the importing file by its path; the target by resolving a relative specifier against the file's directory, or a bare workspace specifier (`@scope/pkg[/sub]`) to its package dir via longest-prefix match.
+1. **Find the workspace root** — walk up from the file to the nearest `package.json` declaring `workspaces` or a `pnpm-workspace.yaml` (falls back to oxlint's cwd). Keying off the file path keeps results identical no matter which directory you run oxlint from.
+2. **Index packages** — expand workspace globs from package.json or pnpm's `packages:` list; read each package's `name` once and memoize a `name → dir` map.
+3. **Classify both ends of each import** — the importing file by its path; the target by resolving a relative specifier against the file's directory, or a bare workspace specifier (`@scope/pkg[/sub]`) to its matching export/source entry path (falling back to the package directory).
 4. **Evaluate** — `self` → allowed; in the value allow-list → allowed; `import type` and in the type-only allow-list → allowed; otherwise the `default` decides.
 
 ## Versioning & the alpha pin

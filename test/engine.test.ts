@@ -146,6 +146,7 @@ describe("engine: evaluate", () => {
 // --- discover.ts filesystem tests, backed by a tiny temp workspace ---
 
 let fixtureRoot: string;
+let pnpmRoot: string;
 
 beforeAll(() => {
   // Build a minimal monorepo:
@@ -177,16 +178,52 @@ beforeAll(() => {
 
   // A nested source dir to start the workspace-root walk from.
   mkdirSync(join(fixtureRoot, "apps/api/src/http"), { recursive: true });
+
+  pnpmRoot = mkdtempSync(join(tmpdir(), "oxb-pnpm-"));
+  writeFileSync(
+    join(pnpmRoot, "package.json"),
+    JSON.stringify({ name: "pnpm-root", private: true }),
+  );
+  writeFileSync(
+    join(pnpmRoot, "pnpm-workspace.yaml"),
+    "packages: [\n  'apps/*',\n  'libs/**',\n  '!libs/**/fixtures',\n]\n",
+  );
+  const auditLog = join(pnpmRoot, "libs/platform/data-access/audit-log");
+  mkdirSync(join(auditLog, "src"), { recursive: true });
+  writeFileSync(
+    join(auditLog, "package.json"),
+    JSON.stringify({ name: "@prism/audit-log", exports: { ".": "./src/index.ts" } }),
+  );
+  writeFileSync(join(auditLog, "src/index.ts"), "export {};\n");
+  const db = join(pnpmRoot, "libs/platform/database/prism-db");
+  mkdirSync(join(db, "src"), { recursive: true });
+  writeFileSync(
+    join(db, "package.json"),
+    JSON.stringify({
+      name: "@prism/prism-db",
+      nx: { sourceRoot: "libs/platform/database/prism-db/src" },
+    }),
+  );
+  writeFileSync(join(db, "src/index.ts"), "export {};\n");
+  const excluded = join(pnpmRoot, "libs/platform/data-access/fixtures");
+  mkdirSync(excluded, { recursive: true });
+  writeFileSync(join(excluded, "package.json"), JSON.stringify({ name: "@prism/fixtures" }));
 });
 
 afterAll(() => {
   rmSync(fixtureRoot, { recursive: true, force: true });
+  rmSync(pnpmRoot, { recursive: true, force: true });
 });
 
 describe("discover: findWorkspaceRoot", () => {
   it("walks up from a nested dir to the nearest package.json with workspaces", () => {
     const start = join(fixtureRoot, "apps/api/src/http");
     expect(findWorkspaceRoot(start, "/nonexistent-fallback")).toBe(fixtureRoot);
+  });
+
+  it("finds a pnpm workspace root without package.json workspaces", () => {
+    const start = join(pnpmRoot, "libs/platform/data-access/audit-log/src");
+    expect(findWorkspaceRoot(start, "/nonexistent-fallback")).toBe(pnpmRoot);
   });
 
   it("returns the fallback when no workspaces ancestor exists", () => {
@@ -205,6 +242,14 @@ describe("discover: discoverPackages / getPackageIndex", () => {
       .map((p) => p.name)
       .sort();
     expect(names).toEqual(["@scope/api", "@scope/api-client", "@scope/core"]);
+  });
+
+  it("discovers nested packages from pnpm-workspace.yaml and honors excludes", () => {
+    expect(
+      discoverPackages(pnpmRoot)
+        .map((pkg) => pkg.name)
+        .sort(),
+    ).toEqual(["@prism/audit-log", "@prism/prism-db"]);
   });
 
   it("builds a name -> dir index", () => {
@@ -272,6 +317,35 @@ describe("engine: classifySpecifier / classifyTarget (integrated with discover)"
         workspaceScope: "@scope/",
       }),
     ).toBe("core");
+  });
+
+  it("classifies a pnpm workspace import at its exported source path", () => {
+    const elements: Element[] = [
+      prefixElement("database", "libs/platform/database/prism-db/src"),
+      prefixElement("data-access", "libs/platform/data-access/audit-log/src"),
+    ];
+    expect(
+      classifyTarget(
+        "@prism/prism-db",
+        join(pnpmRoot, "libs/platform/data-access/audit-log/src/index.ts"),
+        pnpmRoot,
+        {
+          elements,
+          workspaceScope: "@prism/",
+        },
+      ),
+    ).toBe("database");
+    expect(
+      classifyTarget(
+        "@prism/audit-log",
+        join(pnpmRoot, "libs/platform/database/prism-db/src/index.ts"),
+        pnpmRoot,
+        {
+          elements,
+          workspaceScope: "@prism/",
+        },
+      ),
+    ).toBe("data-access");
   });
 
   it("classifyTarget returns null for an external (out-of-scope) dependency", () => {

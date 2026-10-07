@@ -17,7 +17,7 @@ export type { BoundaryTable, Element, Verdict } from "./engine.js";
 // A single `settings.boundaries.elements[]` entry, post-validation.
 export interface ElementConfig {
   type: string;
-  pattern: string;
+  pattern: string | string[];
 }
 
 // A single `settings.boundaries.rules[]` entry, post-validation.
@@ -79,9 +79,8 @@ function escapeLiteral(literal: string): string {
 
 // Compile an ELEMENT pattern (a root-relative path prefix) to a matcher.
 //
-// Supported shapes - the small set monorepos actually use:
-//   - "dir/<star><star>" -> match the dir itself AND anything under it.
-//   - "dir"              -> identical (a bare directory).
+// Supports literal directory prefixes and glob segments (`*`, `**`). An
+// array of patterns lets one element type cover multiple workspace roots.
 //
 // Both compile to `^<dir>(/|$)` (gotcha G6). The `(/|$)` boundary is the whole
 // point: a bare workspace specifier (`@scope/core`) resolves to a package dir
@@ -89,23 +88,27 @@ function escapeLiteral(literal: string): string {
 // silently classify it as null and no-op the rule. `(/|$)` matches the dir
 // itself while still preventing `apps/api` from matching `apps/api-client`.
 //
-// Anything else (a mid-segment wildcard, a `*.ext` tail, a leading globstar
-// segment) is rejected - element patterns are prefixes, not file globs.
 function compileElementPattern(pattern: string, label: string): (relPath: string) => boolean {
   const normalized = pattern.replaceAll("\\", "/").replace(/^\.\//, "");
-  // Strip an optional trailing globstar segment (or bare slash) for the prefix.
   const dir = normalized.replace(/\/\*\*$/, "").replace(/\/+$/, "");
   if (dir === "" || dir === "**") {
     fail(`${label} pattern ${JSON.stringify(pattern)} is too broad - name a directory.`);
   }
-  if (dir.includes("*")) {
-    fail(
-      `${label} pattern ${JSON.stringify(pattern)} is unsupported - element patterns must be a ` +
-        `directory ("dir") or a directory tree ("dir" + slash + globstar), with no wildcards ` +
-        `inside the path.`,
-    );
+  let source = "";
+  for (let i = 0; i < dir.length; i += 1) {
+    if (dir.startsWith("**/", i)) {
+      source += "(?:.*/)?";
+      i += 2;
+    } else if (dir.startsWith("**", i)) {
+      source += ".*";
+      i += 1;
+    } else if (dir[i] === "*") {
+      source += "[^/]*";
+    } else {
+      source += escapeLiteral(dir[i] as string);
+    }
   }
-  const re = new RegExp(`^${escapeLiteral(dir)}(/|$)`);
+  const re = new RegExp(`^${source}(/|$)`);
   return (relPath) => re.test(relPath);
 }
 
@@ -163,12 +166,21 @@ function validateElements(raw: unknown): ElementConfig[] {
     if (typeof type !== "string" || type === "") {
       fail(`elements[${idx}] is missing a string \`type\`.`);
     }
-    if (typeof pattern !== "string" || pattern === "") {
-      fail(`elements[${idx}] (type ${JSON.stringify(type)}) is missing a string \`pattern\`.`);
+    if (
+      !(typeof pattern === "string" && pattern !== "") &&
+      !(
+        Array.isArray(pattern) &&
+        pattern.length > 0 &&
+        pattern.every((p) => typeof p === "string" && p !== "")
+      )
+    ) {
+      fail(
+        `elements[${idx}] (type ${JSON.stringify(type)}) must have a non-empty string or a non-empty array of non-empty strings for \`pattern\`.`,
+      );
     }
     if (seen.has(type)) fail(`duplicate element type ${JSON.stringify(type)}.`);
     seen.add(type);
-    out.push({ type, pattern });
+    out.push({ type, pattern: pattern as string | string[] });
   });
   return out;
 }
@@ -287,10 +299,12 @@ export function compileConfig(
   }
 
   // Compile element matchers (ordered, first-match-wins preserved).
-  const elements: Element[] = elementConfigs.map((e) => ({
-    type: e.type,
-    test: compileElementPattern(e.pattern, `elements[type ${JSON.stringify(e.type)}]`),
-  }));
+  const elements: Element[] = elementConfigs.map((e) => {
+    const patterns = (Array.isArray(e.pattern) ? e.pattern : [e.pattern]).map((pattern) =>
+      compileElementPattern(pattern, `elements[type ${JSON.stringify(e.type)}]`),
+    );
+    return { type: e.type, test: (relPath) => patterns.some((matches) => matches(relPath)) };
+  });
 
   // Compile ignore matchers - reuse the Element shape (type is a placeholder
   // label; only `test` is used by the rule).
